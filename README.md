@@ -1,106 +1,86 @@
 # DeepRun · PostHog Marketing-Analytics POC
 
-Proof-of-concept for the **Buy-First Marketing Analytics PRD**. It implements the
-"~1 day of real engineering" — SPA pageview, named events, server-side
-`subscription_started`, first-touch UTM — and runs locally **without a PostHog
-key** (demo mode mirrors every event on screen).
+A runnable proof-of-concept for the Buy-First Marketing Analytics PRD. It
+implements the four instrumentation points (SPA pageview, named events,
+server-side `subscription_started`, first-touch UTM) and runs **with or without**
+a PostHog key.
 
-Purpose: show management the dev work is small and the attribution chain
-(YouTube click → payment) actually works, before buying any SaaS.
+## Prerequisites
 
-## What it proves (vs PRD)
+- Node.js 22+
+- A PostHog account only if you want LIVE mode (free tier is enough)
 
-| PRD requirement | File |
-| --- | --- |
-| C2 · SPA `page_view` tracker (the open gap, §6.2) | `src/components/PageviewTracker.tsx` |
-| C3 · named events: sign_up, lesson_started, paywall_viewed, checkout_started | `src/components/JourneySimulator.tsx` |
-| C4 · server-side `subscription_started` (authoritative, §6.4) | `src/app/api/billing/webhook/route.ts` |
-| §3 · first-touch UTM carried through to payment | `src/lib/attribution.ts` |
-| §4 · funnel + campaign comparison (illustrative only) | `src/components/FunnelStory.tsx` |
-
-## Run
+## Quick start (demo mode — no key needed)
 
 ```bash
 npm install
 npm run dev      # http://localhost:3030
 ```
 
-No env required → **demo mode**: events show in the on-screen "Live event
-stream"; the webhook reports what it *would* send. To send to PostHog for real,
-`cp .env.example .env` and fill the keys (banner flips to LIVE).
+The top-right badge shows **DEMO MODE**: events are mirrored to the on-screen
+"Live event stream" but not sent anywhere. Good enough to demo the whole flow.
 
-## How it works
+## Connect to PostHog (LIVE mode)
 
-```text
-Deeplink (?utm_source=youtube)         <- Dub / Google URL Builder produces this
-        |
-        v  land
-PageviewTracker  -- captureFirstTouch() --> localStorage (first-touch UTM)
-        |                                          |
-        |  every named event reads UTM ------------+
-        v
-capture()  --> posthog-js (LIVE)  +  on-screen log (always)
-        |
-        v  step 5
-POST /api/billing/webhook  --> posthog-node  $subscription_started$
-                               distinct_id = userId  (stitches to same person)
-```
+1. Sign up at <https://posthog.com> and pick a region (EU or US).
+2. Settings → Project → **Project API Key** (`phc_...`), copy it.
+3. Create `.env` from the template and fill it:
 
-- **First-touch** (`attribution.ts`): UTMs are stored on first landing and never
-  overwritten — so a payment days later is still credited to the original source.
-- **Demo mode** (`analytics.ts`): when no key, `posthog.capture` is skipped but
-  the event is still mirrored to the live stream, so the demo is observable.
+   ```bash
+   cp .env.example .env
+   ```
 
-## Demo script (management walkthrough)
+   ```bash
+   NEXT_PUBLIC_POSTHOG_KEY=phc_xxxx
+   NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com   # match your region
+   POSTHOG_SERVER_KEY=phc_xxxx                          # same key is fine
+   POSTHOG_SERVER_HOST=https://eu.i.posthog.com
+   ```
 
-1. Click a deeplink chip (e.g. **YouTube · preflop-series**) → simulates landing
+4. `npm run dev` again. The badge flips to **LIVE** and events flow into PostHog
+   (Activity → Events, within seconds).
+
+> The `phc_` key is write-only and safe to expose in the browser.
+
+## Demo walkthrough (for the Monday meeting)
+
+1. Click a deeplink chip (e.g. **YouTube · preflop-series**) — simulates landing
    from that campaign. First-touch UTM appears top-left.
-   *To switch campaign, press **reset** first (first-touch never overwrites).*
-2. Run journey buttons 1→5. Each named event appears tagged `client`, carrying
+   *To switch campaign, press **reset** first (first-touch never overwrites.)*
+2. Run journey buttons 1 → 5. Each named event appears tagged `client`, carrying
    the UTM source.
-3. Step 5 (**Subscribe**) POSTs to the webhook; `subscription_started` returns
-   tagged `server` — same `distinct_id`, still attributed to youtube, even
-   though it fired server-side.
-4. Bottom panel = the PostHog funnel + campaign table management reads:
-   newsletter converts ~6× the FB ad → shift budget.
+3. Step 5 (**Subscribe**) calls the webhook; `subscription_started` returns
+   tagged `server` — same person, still attributed to youtube.
+4. Bottom panel = the funnel + campaign table PostHog produces (illustrative).
+
+## Files in this folder
+
+| File | What it is |
+| --- | --- |
+| `POC-REPORT.md` | Main report (PRD format) — the deliverable. `.docx` lives in `docs/deeprun/reports/` |
+| `assets/posthog-activity-proof.png` | Screenshot proof of the live event |
+| `src/components/PageviewTracker.tsx` | SPA `page_view` tracker (PRD C2) |
+| `src/components/JourneySimulator.tsx` | Fires the named events (PRD C3) |
+| `src/app/api/billing/webhook/route.ts` | Server-side `subscription_started` (PRD C4) |
+| `src/lib/attribution.ts` | First-touch UTM capture (PRD §3) |
+| `src/lib/analytics.ts` | posthog-js wrapper + on-screen event bus |
+| `.env.example` | Template for the PostHog keys |
 
 ## Mapping to production (deeprun-frontend)
 
 | POC | Production |
 | --- | --- |
 | `PageviewTracker` in `app/layout.tsx` | `src/app/[lang]/layout.tsx` |
-| `providers.tsx` posthog-js init | loaded via existing GTM container (GTM-KM659L5K), not a direct init |
-| `api/billing/webhook/route.ts` | `src/app/api/billing/webhook/route.ts` — see note below |
-| (not in POC) | add PostHog host to CSP `src/lib/security-headers.ts`; wire `NEXT_PUBLIC_POSTHOG_*` through Dockerfile + CI + build-args + GitHub env (infra/P'F) |
-
-### Where `subscription_started` really goes
-
-Do **not** fire it on the raw `customer.subscription.created` case. That case
-also receives `incomplete` (not-yet-paid) subscriptions, which the real webhook
-skips via `shouldMirror()` (`route.ts:106`). Firing there would count unpaid
-subs and inflate conversions.
-
-Fire it **inside `handleSubscriptionUpsert`, after the `shouldMirror()` guard
-passes**, and **dedupe**: `created`/`updated` fire on every renewal and plan
-change, so guard to emit only on the first transition into `active` (e.g. check
-prior status, or key off `invoice.payment_succeeded` with
-`billing_reason = subscription_create`). Otherwise one payer is counted many
-times.
-
-## Out of scope (intentionally)
-
-- Cookie-consent gate and PII masking in replays — launch requirement (§6, §10),
-  not a POC concern.
-- `subscription_canceled` (C4 pairs it with started) — same pattern, omitted.
-- Autocapture (C1) — a PostHog feature, nothing to build.
-- Funnel/campaign numbers in `FunnelStory.tsx` are the PRD's illustrative
-  figures, not live data.
+| posthog-js init in `providers.tsx` | loaded via existing GTM (GTM-KM659L5K) |
+| `api/billing/webhook/route.ts` | `src/app/api/billing/webhook/route.ts` — fire inside `handleSubscriptionUpsert` after the `shouldMirror()` guard (route.ts:106), and dedupe; do **not** use the raw `customer.subscription.created` case |
+| (not in POC) | PostHog host in CSP `src/lib/security-headers.ts`; env-var pipeline (infra / P'F) |
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 | --- | --- |
-| Banner stuck on DEMO MODE | `NEXT_PUBLIC_POSTHOG_KEY` empty — set it in `.env`, restart |
-| UTM panel shows "—" after clicking a 2nd campaign | first-touch is sticky by design; press **reset** then click the deeplink |
+| Badge stuck on DEMO MODE | `NEXT_PUBLIC_POSTHOG_KEY` empty — set it in `.env`, restart |
+| UTM panel shows "—" after a 2nd campaign | first-touch is sticky by design; press **reset**, then click the deeplink |
 | Webhook returns `"mode":"demo"` | `POSTHOG_SERVER_KEY` empty — expected; set it to send for real |
-| Port 3030 in use | edit the `-p` flag in `package.json` scripts |
+| Events not in PostHog | wrong region host — match `*_HOST` to your EU/US project |
+| Port 3030 in use | change the `-p` flag in `package.json` scripts |
